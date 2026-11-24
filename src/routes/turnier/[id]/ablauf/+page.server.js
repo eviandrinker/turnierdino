@@ -15,7 +15,7 @@ async function save({ params, request }, skip) {
 	if (!result.valid) return fail(400, { values, errors: result.errors });
 	try { await updateTournament(params.id, result.values); }
 	catch (error) { return mutationFailure(error, { values }); }
-	redirect(303, `/turnier/${params.id}${tournament.teamEntry === 'code' ? '/code' : ''}`);
+	redirect(303, `/turnier/${params.id}${tournament.teamEntry === 'code' ? '/code' : '/spielplan/erstellen'}`);
 }
 
 export const actions = {

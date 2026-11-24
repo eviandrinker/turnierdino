@@ -6,8 +6,8 @@
 	let name = $state(untrack(() => form?.name ?? ''));
 	let localError = $state('');
 	let saving = $state(false);
-	let nameInput;
-	let nextButton;
+	let nameInput = $state();
+	let nextButton = $state();
 	const complete = $derived(data.teams.length === data.tournament.teamCount);
 	const nameError = $derived(localError || form?.errors?.name);
 

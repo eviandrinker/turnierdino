@@ -4,6 +4,9 @@ import { DB_URI, DB_NAME } from '$app/env/private';
 import { validateTournament } from '../tournament-rules.js';
 import { normalizeTeamName, validateTeam } from '../team-rules.js';
 import { validateSchedule } from '../schedule-rules.js';
+import { generateSchedule } from './schedule.js';
+import { applyResults, advanceMatchday } from './results.js';
+import { currentMatchday } from '../matchdays.js';
 
 let client;
 let connection;
@@ -34,7 +37,8 @@ async function ensureIndexes(db) {
 		db.collection('tournaments').createIndex({ joinCode: 1 }, {
 			unique: true, partialFilterExpression: { joinCode: { $type: 'string' } }
 		}),
-		db.collection('teams').createIndex({ tournamentId: 1, nameKey: 1 }, { unique: true })
+		db.collection('teams').createIndex({ tournamentId: 1, nameKey: 1 }, { unique: true }),
+		db.collection('matches').createIndex({ tournamentId: 1, matchNumber: 1 }, { unique: true })
 	]);
 	try { await indexes; } catch (error) { indexes = undefined; throw error; }
 }
@@ -56,7 +60,7 @@ export async function createTournament(input) {
 	const db = await getDb();
 	const { insertedId } = await db.collection('tournaments').insertOne({
 		...result.values, teamEntry: null, startTime: null, fields: null,
-		matchDuration: null, status: 'Entwurf', createdAt: new Date()
+		matchDuration: null, currentRound: 1, status: 'Entwurf', createdAt: new Date()
 	});
 	return insertedId.toHexString();
 }
@@ -65,7 +69,16 @@ export async function getTournament(id) {
 	const _id = objectId(id);
 	if (!_id) return null;
 	const db = await getDb();
-	return db.collection('tournaments').findOne({ _id });
+	const tournament = await db.collection('tournaments').findOne({ _id });
+	if (tournament && !Number.isInteger(tournament.currentRound)) {
+		const matches = await db.collection('matches').find({ tournamentId: _id }).toArray();
+		const currentRound = currentMatchday(tournament, matches);
+		await db.collection('tournaments').updateOne(
+			{ _id, currentRound: tournament.currentRound ?? null }, { $set: { currentRound } }
+		);
+		return db.collection('tournaments').findOne({ _id });
+	}
+	return tournament;
 }
 
 export async function getTeams(id) {
@@ -78,13 +91,17 @@ export async function getTeams(id) {
 // Die gemeinsame Turnier-Schreiboperation serialisiert Änderungen auch zwischen Serverinstanzen.
 // MongoDB-Transaktionen benötigen ein Replica Set (z. B. Atlas).
 async function changeDraft(id, change) {
+	return changeTournament(id, ['Entwurf'], change);
+}
+
+async function changeTournament(id, statuses, change) {
 	const _id = objectId(id);
 	if (!_id) throw new TournamentInputError('Dieses Turnier wurde nicht gefunden.');
 	const db = await getDb();
 	await ensureIndexes(db);
 	return client.withSession((session) => session.withTransaction(async () => {
 		const tournament = await db.collection('tournaments').findOneAndUpdate(
-			{ _id, status: 'Entwurf' }, { $inc: { revision: 1 } }, { session, returnDocument: 'after' }
+			{ _id, status: { $in: statuses } }, { $inc: { revision: 1 } }, { session, returnDocument: 'after' }
 		);
 		if (!tournament) throw new TournamentInputError('Dieses Turnier kann nicht mehr bearbeitet werden.');
 		return change(db, session, tournament);
@@ -147,4 +164,90 @@ export async function updateTournament(id, changes) {
 		}
 	}
 	throw new Error('Es konnte kein freier Beitrittscode erzeugt werden.');
+}
+
+function teamView(team) {
+	return { id: team._id.toHexString(), name: team.name, group: team.group ?? null };
+}
+
+function matchView(match) {
+	const { _id, tournamentId, teamAId, teamBId, ...values } = match;
+	return { ...values, id: _id.toHexString(), teamAId: teamAId?.toHexString() ?? null, teamBId: teamBId?.toHexString() ?? null };
+}
+
+export async function getMatches(id) {
+	const tournamentId = objectId(id);
+	if (!tournamentId) return [];
+	const db = await getDb();
+	return (await db.collection('matches').find({ tournamentId }).sort({ matchNumber: 1 }).toArray()).map(matchView);
+}
+
+export async function createMatchSchedule(id) {
+	const seed = randomInt(0, 0x100000000);
+	return changeTournament(id, ['Bereit', 'Läuft', 'Abgeschlossen'], async (db, session, tournament) => {
+		// Gemeinsame Schreibsperre + eindeutiger Index verhindern paralleles Erzeugen.
+		if (await db.collection('matches').findOne({ tournamentId: tournament._id }, { session })) return;
+		if (tournament.status !== 'Bereit') throw new TournamentInputError('Der Spielplan kann jetzt nicht erstellt werden.');
+		const teams = (await db.collection('teams').find({ tournamentId: tournament._id }, { session }).sort({ createdAt: 1, _id: 1 }).toArray()).map(teamView);
+		if (teams.length !== tournament.teamCount) throw new TournamentInputError('Bitte warte, bis alle Teams angemeldet sind.');
+		const plan = generateSchedule(tournament, teams, seed);
+		if (tournament.mode === 'gruppen_ko') {
+			await db.collection('teams').bulkWrite(plan.teams.map((team) => ({
+				updateOne: { filter: { _id: objectId(team.id), tournamentId: tournament._id }, update: { $set: { group: team.group } } }
+			})), { session });
+		}
+		await db.collection('matches').insertMany(plan.matches.map((match) => ({
+			...match, tournamentId: tournament._id,
+			teamAId: objectId(match.teamAId), teamBId: objectId(match.teamBId)
+		})), { session });
+		await db.collection('tournaments').updateOne({ _id: tournament._id }, { $set: { planCreatedAt: new Date(), currentRound: 1 } }, { session });
+	});
+}
+
+async function persistMatches(db, session, tournamentId, matches) {
+	await db.collection('matches').bulkWrite(matches.map((match) => ({ updateOne: {
+		filter: { tournamentId, matchNumber: match.matchNumber },
+		update: { $set: {
+			teamAId: objectId(match.teamAId), teamBId: objectId(match.teamBId),
+			scoreA: match.scoreA, scoreB: match.scoreB, status: match.status
+		} }
+	} })), { session });
+}
+
+export async function getMatch(id) {
+	const _id = objectId(id);
+	if (!_id) return null;
+	return (await getDb()).collection('matches').findOne({ _id });
+}
+
+export async function saveMatchResults(id, entries) {
+	return changeTournament(id, ['Bereit', 'Läuft', 'Abgeschlossen'], async (db, session, tournament) => {
+		const raw = await db.collection('matches').find({ tournamentId: tournament._id }, { session }).sort({ matchNumber: 1 }).toArray();
+		if (!raw.length) throw new TournamentInputError('Bitte erstelle zuerst den Spielplan.');
+		const matches = raw.map(matchView);
+		const currentRound = currentMatchday(tournament, matches);
+		const teams = (await db.collection('teams').find({ tournamentId: tournament._id }, { session }).sort({ createdAt: 1, _id: 1 }).toArray()).map(teamView);
+		const result = applyResults(matches, teams, entries, { currentRound });
+		if (!result.valid) {
+			const error = new TournamentInputError('Bitte prüfe das Resultat.', result.errors);
+			error.snapshot = { matches, currentRound, status: tournament.status, revision: tournament.revision - 1 };
+			throw error;
+		}
+		await persistMatches(db, session, tournament._id, result.matches);
+		await db.collection('tournaments').updateOne({ _id: tournament._id }, { $set: { status: result.status, currentRound } }, { session });
+		return { matches: result.matches, status: result.status, currentRound, revision: tournament.revision };
+	});
+}
+
+export async function advanceTournamentRound(id, expectedRound) {
+	return changeTournament(id, ['Bereit', 'Läuft', 'Abgeschlossen'], async (db, session, tournament) => {
+		const matches = (await db.collection('matches').find({ tournamentId: tournament._id }, { session }).sort({ matchNumber: 1 }).toArray()).map(matchView);
+		const teams = (await db.collection('teams').find({ tournamentId: tournament._id }, { session }).sort({ createdAt: 1, _id: 1 }).toArray()).map(teamView);
+		const currentRound = currentMatchday(tournament, matches);
+		const result = advanceMatchday(matches, teams, currentRound, expectedRound);
+		if (!result.valid) throw new TournamentInputError(result.error);
+		await persistMatches(db, session, tournament._id, result.matches);
+		await db.collection('tournaments').updateOne({ _id: tournament._id }, { $set: { currentRound: result.currentRound } }, { session });
+		return result.currentRound;
+	});
 }

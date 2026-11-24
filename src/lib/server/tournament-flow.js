@@ -13,7 +13,7 @@ export async function requireStep(id, requested) {
 	const { _id, ...rest } = tournament;
 	return {
 		tournament: { ...rest, id: _id.toHexString() },
-		teams: teams.map((team) => ({ id: team._id.toHexString(), name: team.name }))
+		teams: teams.map((team) => ({ id: team._id.toHexString(), name: team.name, group: team.group ?? null }))
 	};
 }
 
