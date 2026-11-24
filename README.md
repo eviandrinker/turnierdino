@@ -54,3 +54,26 @@ npm run build
 You can preview the production build with `npm run preview`.
 
 > To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+
+## Deployment (Netlify)
+
+Das Projekt verwendet `@sveltejs/adapter-netlify`. Die Build-Einstellungen stehen in `netlify.toml`
+(Build-Befehl `npm run build`, Publish-Ordner `build`, Node 22). Die App läuft als Node-basierte
+Netlify Function.
+
+In Netlify unter **Site configuration → Environment variables** setzen:
+
+| Variable  | Beschreibung                                                                  |
+| --------- | ----------------------------------------------------------------------------- |
+| `DB_URI`  | MongoDB-Verbindungs-URI, z. B. `mongodb+srv://BENUTZER:PASSWORT@CLUSTER.mongodb.net/` |
+| `DB_NAME` | Name der Datenbank                                                            |
+
+Hinweise:
+
+- Die Variablen werden beim Start der Function gelesen (nicht beim Build eingebaut). Nach einer
+  Änderung genügt ein erneutes Deploy, der Code muss nicht angepasst werden.
+- Fehlt eine der Variablen, startet die App mit einer Fehlermeldung.
+- Für Anmeldungen und Spielpläne werden MongoDB-Transaktionen genutzt; die Datenbank muss daher
+  ein Replica Set sein (bei MongoDB Atlas automatisch der Fall).
+- In MongoDB Atlas unter **Network Access** den Zugriff für Netlify erlauben (Netlify hat keine
+  festen IP-Adressen, daher in der Regel `0.0.0.0/0` mit starkem Passwort).

@@ -18,9 +18,12 @@ let client;
 let connection;
 let indexes;
 
+// Ein Client pro Serverless-Instanz: Der Client liegt auf Modulebene und wird bei warmen Aufrufen
+// wiederverwendet; parallele Anfragen teilen sich dasselbe Verbindungs-Promise.
+// Kleiner Pool, weil viele Function-Instanzen gleichzeitig laufen können (Verbindungslimit von Atlas).
 export async function getDb() {
 	connection ??= (async () => {
-		const candidate = new MongoClient(DB_URI);
+		const candidate = new MongoClient(DB_URI, { maxPoolSize: 10 });
 		try {
 			await candidate.connect();
 			client = candidate;
