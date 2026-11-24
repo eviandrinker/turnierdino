@@ -1,8 +1,8 @@
 <script>
 	import { enhance } from '$app/forms';
+	import TournamentCard from '#lib/components/TournamentCard.svelte';
 	let { form } = $props();
 	const LENGTH = 6;
-	const modes = { liga: 'Liga', gruppen_ko: 'Gruppen + K.-o.', ko: 'Nur K.-o.' };
 	let digits = $state(Array.from({ length: LENGTH }, (_, i) => form?.digits?.[i] ?? ''));
 	let inputs = $state([]);
 	let submitting = $state(false);
@@ -127,14 +127,7 @@
 		{:else}
 			<ul class="open-list-items">
 				{#each filtered as tournament (tournament.id)}
-					<li>
-						<div class="info">
-							<h3>{tournament.name}</h3>
-							<p>{modes[tournament.mode] ?? tournament.mode} · Start {tournament.startTime ?? 'offen'}{tournament.startTime ? ' Uhr' : ''}</p>
-							<p class="count">{tournament.registeredCount} von {tournament.teamCount} Teams</p>
-						</div>
-						<a class="button" href={`/beitreten/${tournament.id}`} aria-label={`Beitreten: ${tournament.name}`}>Beitreten</a>
-					</li>
+					<li><TournamentCard {tournament} /></li>
 				{/each}
 			</ul>
 		{/if}
@@ -160,16 +153,10 @@
 	.modal-heading h2 { margin: 0; font-size: 26px; }
 	.results { margin-top: 16px; }
 	.empty { padding-block: 24px; }
-	.open-list-items { list-style: none; padding: 0; margin: 0; }
-	.open-list-items li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--color-secondary); }
-	.info { min-width: 0; }
-	.info h3 { margin: 0 0 4px; font-size: 1.125rem; overflow-wrap: anywhere; }
-	.info p { margin: 0; font-size: 0.875rem; line-height: 1.5; }
-	.count { color: #555; }
-	.open-list-items .button { flex-shrink: 0; }
+	.open-list-items { display: grid; gap: 16px; list-style: none; padding: 0; margin: 0; }
+	.open-list-items li { display: flex; min-width: 0; }
+	.open-list-items li > :global(*) { flex: 1; }
 	@media (max-width: 767px) {
 		.open-modal { width: calc(100% - 16px); max-width: none; height: calc(100dvh - 16px); max-height: none; padding: 20px; }
-		.open-list-items li { align-items: flex-start; flex-direction: column; gap: 12px; }
-		.open-list-items .button { width: 100%; }
 	}
 </style>

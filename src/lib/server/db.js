@@ -10,7 +10,8 @@ import { validateTournament } from '../tournament-rules.js';
 import { normalizeTeamName, validateTeam } from '../team-rules.js';
 import { validateSchedule } from '../schedule-rules.js';
 import { generateSchedule } from './schedule.js';
-import { applyResults, advanceMatchday } from './results.js';
+import { applyResults, advanceMatchday, tournamentWinner } from './results.js';
+import { SEARCH_CATEGORIES, SEARCH_PAGE_SIZE, nameFilter, groupByCategory, pageOf, publicTournament, searchComparators } from '../tournament-search.js';
 import { currentMatchday } from '../matchdays.js';
 
 let client;
@@ -421,4 +422,69 @@ export async function getParticipations(userId) {
 		mode: tournament.mode, teamCount: tournament.teamCount, status: tournament.status, createdAt: tournament.createdAt,
 		startTime: tournament.startTime, teamName: byId.get(tournament._id.toHexString()), href: `/turnier/${tournament._id.toHexString()}`
 	})).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt) || a.id.localeCompare(b.id));
+}
+
+// Aktive Turniere (Bereit/Läuft) werden über searchCategory eingeteilt; diese Obergrenze schützt vor Ausreissern.
+const ACTIVE_SEARCH_LIMIT = 1000;
+
+async function winnerNames(db, rows) {
+	if (!rows.length) return new Map();
+	const ids = rows.map((row) => row._id);
+	const [teams, matches] = await Promise.all([
+		db.collection('teams').find({ tournamentId: { $in: ids } }).sort({ createdAt: 1, _id: 1 }).toArray(),
+		db.collection('matches').find({ tournamentId: { $in: ids } }).sort({ matchNumber: 1 }).toArray()
+	]);
+	const byTournament = (list) => Map.groupBy(list, (item) => item.tournamentId.toHexString());
+	const teamsBy = byTournament(teams), matchesBy = byTournament(matches);
+	return new Map(rows.map((row) => {
+		const id = row._id.toHexString();
+		const views = (teamsBy.get(id) ?? []).map(teamView);
+		const winnerId = tournamentWinner(row, views, (matchesBy.get(id) ?? []).map(matchView));
+		return [id, views.find((team) => team.id === winnerId)?.name ?? null];
+	}));
+}
+
+/** Öffentliche Turniersuche: query = { q, category: 'alle' | offen | laufend | abgeschlossen, page }. */
+export async function searchTournaments({ q = '', category = 'alle', page = 1 } = {}) {
+	const db = await getDb();
+	const filter = nameFilter(q);
+	const fields = { name: 1, mode: 1, startTime: 1, status: 1, teamCount: 1, teamEntry: 1, planCreatedAt: 1, createdAt: 1 };
+	const [active, finishedCount] = await Promise.all([
+		db.collection('tournaments').aggregate([
+			{ $match: { ...filter, status: { $in: ['Bereit', 'Läuft'] } } },
+			{ $sort: { createdAt: -1, _id: 1 } }, { $limit: ACTIVE_SEARCH_LIMIT },
+			{ $lookup: { from: 'matches', localField: '_id', foreignField: 'tournamentId', pipeline: [{ $limit: 1 }, { $project: { _id: 1 } }], as: 'games' } },
+			{ $lookup: { from: 'teams', localField: '_id', foreignField: 'tournamentId', pipeline: [{ $count: 'total' }], as: 'registrations' } },
+			{ $project: { ...fields,
+				hasMatches: { $gt: [{ $size: '$games' }, 0] },
+				registeredCount: { $ifNull: [{ $arrayElemAt: ['$registrations.total', 0] }, 0] } } }
+		]).toArray(),
+		db.collection('tournaments').countDocuments({ ...filter, status: 'Abgeschlossen' })
+	]);
+	const groups = groupByCategory(active);
+	const counts = { offen: groups.offen.length, laufend: groups.laufend.length, abgeschlossen: finishedCount };
+	const wanted = category === 'alle' ? SEARCH_CATEGORIES : [category];
+	const pageNumber = category === 'alle' ? 1 : page;
+	const sections = {};
+	for (const key of wanted) {
+		if (key === 'abgeschlossen') {
+			const size = SEARCH_PAGE_SIZE;
+			const rows = await db.collection('tournaments').find({ ...filter, status: 'Abgeschlossen' }, { projection: fields })
+				.sort({ createdAt: -1, _id: 1 }).skip((pageNumber - 1) * size).limit(size + 1).toArray();
+			const shown = rows.slice(0, size).sort(searchComparators.abgeschlossen);
+			const ids = shown.map((row) => row._id);
+			const registrations = await db.collection('teams').aggregate([
+				{ $match: { tournamentId: { $in: ids } } }, { $group: { _id: '$tournamentId', count: { $sum: 1 } } }
+			]).toArray();
+			const countBy = new Map(registrations.map((item) => [item._id.toHexString(), item.count]));
+			const winners = await winnerNames(db, shown);
+			sections[key] = { page: pageNumber, hasMore: rows.length > size, items: shown.map((row) => publicTournament(
+				{ ...row, registeredCount: countBy.get(row._id.toHexString()) ?? 0 }, key, winners.get(row._id.toHexString()) ?? null
+			)) };
+		} else {
+			const result = pageOf(groups[key], pageNumber);
+			sections[key] = { ...result, items: result.items.map((row) => publicTournament(row, key)) };
+		}
+	}
+	return { query: { q, category, page: pageNumber }, counts, sections };
 }
