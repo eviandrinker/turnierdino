@@ -2,7 +2,7 @@
 	import '../app.css';
 	import favicon from '#lib/assets/favicon.svg';
 
-	let { children } = $props();
+	let { children, data } = $props();
 	let menuOpen = $state(false);
 	let menuButton;
 
@@ -41,7 +41,15 @@
 	<nav id="navigation" aria-label="Hauptnavigation" class:open={menuOpen}>
 		<a href="/suchen" onclick={() => (menuOpen = false)}>Turnier suchen</a>
 		<a href="/beitreten" onclick={() => (menuOpen = false)}>Turnier beitreten</a>
-		<a class="button" href="/login" onclick={() => (menuOpen = false)}>Login</a>
+		{#if data.user}
+			<a href="/meine-turniere" onclick={() => (menuOpen = false)}>Meine Turniere</a>
+			<details class="user-menu">
+				<summary>{data.user.name}</summary>
+				<form method="POST" action="/abmelden"><button class="button" type="submit">Abmelden</button></form>
+			</details>
+		{:else}
+			<a class="button" href="/login" onclick={() => (menuOpen = false)}>Login</a>
+		{/if}
 	</nav>
 </header>
 
@@ -50,11 +58,15 @@
 </main>
 
 <style>
+	.user-menu { position: relative; }
+	.user-menu summary { cursor: pointer; font-weight: 600; padding-block: 14px; max-width: 180px; overflow-wrap: anywhere; }
+	.user-menu form { position: absolute; right: 0; top: 100%; z-index: 10; padding: 12px; background: var(--color-background); border: 1px solid var(--color-text); }
+
 	header { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding-block: 24px; }
 	.brand { display: inline-flex; align-items: center; gap: 12px; text-decoration: none; }
 	.brand img { width: auto; height: 64px; object-fit: contain; }
 	.brand span { font-size: clamp(1.25rem, 2.5vw, 1.75rem); font-weight: 800; letter-spacing: -0.04em; }
-	nav { display: flex; align-items: center; gap: 32px; }
+	nav { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 20px; }
 	nav a { text-decoration: none; font-weight: 600; }
 	nav a:not(.button):hover { text-decoration: underline; text-underline-offset: 5px; }
 	.menu-toggle { display: none; padding: 12px; }
@@ -64,5 +76,7 @@
 		nav { display: none; width: 100%; align-items: stretch; gap: 8px; }
 		nav.open { display: flex; flex-direction: column; }
 		nav a { padding: 16px; }
+		.user-menu summary { max-width: none; padding: 16px; }
+		.user-menu form { position: static; }
 	}
 </style>

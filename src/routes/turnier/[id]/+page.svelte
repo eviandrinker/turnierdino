@@ -9,6 +9,7 @@
 	import StandingsTable from '#lib/components/StandingsTable.svelte';
 	let { data, form } = $props();
 	const tournamentId = $derived(data.tournament.id);
+	const canEdit = $derived(data.canEdit);
 	let standingsDialog = $state();
 	let snapshot = $state(null);
 	let edits = $state({});
@@ -85,7 +86,7 @@
 		return '';
 	}
 	function submit({ cancel, action }) {
-		if (saving || (action.search === '?/nextRound' && dirty)) { cancel(); return; }
+		if (!canEdit || saving || (action.search === '?/nextRound' && dirty)) { cancel(); return; }
 		saving = true;
 		return async ({ update }) => {
 			try { await update({ reset: false }); }
@@ -94,11 +95,13 @@
 	}
 	$effect(() => {
 		const activeTournamentId = tournamentId;
+		const allowEditing = canEdit;
 		const currentEditor = untrack(() => {
 			snapshot = null;
 			edits = {};
 			selectedDay = currentMatchday(data.tournament, data.matches);
 			lastCurrentRound = selectedDay;
+			if (!allowEditing) { editor = null; return null; }
 			editor = createResultEditor({
 				getMatch: (id) => board.matches.find((match) => match.id === id),
 				onState: (next) => { edits = next; },
@@ -117,7 +120,7 @@
 			});
 			return editor;
 		});
-		return () => currentEditor.dispose();
+		return () => currentEditor?.dispose();
 	});
 
 	onMount(() => {
@@ -143,7 +146,7 @@
 <header class="tournament-header">
 	<h1>{data.tournament.name}</h1>
 	<div class="tournament-meta">
-		<p>{modes[data.tournament.mode]} · Erstellt am {createdDate} · Start {data.tournament.startTime} Uhr</p>
+		<p>{modes[data.tournament.mode]} · Erstellt am {createdDate} · Start {data.tournament.startTime ?? 'noch offen'}{data.tournament.startTime ? ' Uhr' : ''}</p>
 		<span class="status" aria-live="polite">{board.status}</span>
 	</div>
 	{#if winnerId}
@@ -152,19 +155,23 @@
 			<strong>{names.get(winnerId)}</strong>
 		</div>
 	{/if}
-	{#if data.tournament.teamEntry === 'code'}<a href={`/turnier/${data.tournament.id}/code`}>Code zum Teilen</a>{/if}
+	{#if canEdit && data.tournament.teamEntry === 'code'}<a href={`/turnier/${data.tournament.id}/code`}>Code zum Teilen</a>{/if}
 </header>
 {#if liveMessage}<p role="status">{liveMessage}</p>{/if}
 {#if form?.message}<p role="alert">{form.message}</p>{/if}
 
 {#if !board.matches.length}
-	{#if data.teams.length !== data.tournament.teamCount}
+	{#if data.creationIncomplete}
+		<p>Dieses Turnier wird noch vorbereitet.</p>
+	{:else if data.teams.length !== data.tournament.teamCount}
 		<p aria-live="polite">Es sind erst {data.teams.length} von {data.tournament.teamCount} Teams angemeldet</p>
-	{:else}
+	{:else if canEdit}
 		<p>Alle {data.tournament.teamCount} Teams sind angemeldet.</p>
 		<form method="POST" action="?/generate" use:enhance={submit}>
 			<button class="button" disabled={saving}>{saving ? 'Turnierplan wird erstellt…' : 'Spielplan erstellen'}</button>
 		</form>
+	{:else}
+		<p>Alle Teams sind angemeldet. Der Besitzer erstellt den Spielplan.</p>
 	{/if}
 {:else}
 	<nav class="matchday-nav" aria-label="Spieltage">
@@ -210,14 +217,14 @@
 		</section>
 		<section class="schedule" aria-labelledby="schedule-heading">
 			<h2 id="schedule-heading">Spiele</h2>
-			<noscript><p>Bitte aktiviere JavaScript, um Resultate automatisch zu speichern.</p></noscript>
+			{#if canEdit}<noscript><p>Bitte aktiviere JavaScript, um Resultate automatisch zu speichern.</p></noscript>{/if}
 			<ol class="match-list">
 				{#each shownDay?.matches ?? [] as match (match.id)}
 					<li>
 						<p class="match-meta">{match.scheduledTime}{match.scheduledDay ? ` (+${match.scheduledDay} Tage)` : ''} · Feld {match.field} · Spiel {match.matchNumber}{match.phase === 'gruppe' ? ` · Gruppe ${match.group}` : ''}</p>
 						<div class="match-row">
 							<span class="team team-a">{label(match, 'A')}</span>
-							{#if match.teamAId && match.teamBId && selectedDay <= board.currentRound}
+							{#if canEdit && match.teamAId && match.teamBId && selectedDay <= board.currentRound}
 								<div class="scores">
 									{#each ['a', 'b'] as side}
 										{#if side === 'b'}<span aria-hidden="true">:</span>{/if}
@@ -234,10 +241,12 @@
 											aria-invalid={!!edits[match.id]?.error} aria-describedby={`result-status-${match.id}`} />
 									{/each}
 								</div>
+							{:else if match.teamAId && match.teamBId}
+								<span class="readonly-score" aria-label="Resultat">{match.scoreA ?? '–'} : {match.scoreB ?? '–'}</span>
 							{:else}<span class="open-slot">–</span>{/if}
 							<span class="team">{label(match, 'B')}</span>
 						</div>
-						<p class="result-status" class:error={!!edits[match.id]?.error} id={`result-status-${match.id}`} aria-live="polite">{statusText(match)}</p>
+						{#if canEdit}<p class="result-status" class:error={!!edits[match.id]?.error} id={`result-status-${match.id}`} aria-live="polite">{statusText(match)}</p>{/if}
 						{#if edits[match.id]?.error}
 							<div class="error-actions">
 								<button class="reset" type="button" onclick={() => editor?.retry(match.id)}>Erneut versuchen</button>
@@ -247,7 +256,7 @@
 					</li>
 				{/each}
 			</ol>
-			{#if readyForNext}
+			{#if canEdit && readyForNext}
 				<form method="POST" action="?/nextRound" use:enhance={submit}>
 					<input type="hidden" name="currentRound" value={board.currentRound} />
 					<button class="button" disabled={saving || dirty}>{saving ? 'Spieltag wird gewechselt …' : 'Nächster Spieltag'}</button>
@@ -349,6 +358,7 @@
 	.team { min-width: 0; overflow-wrap: anywhere; font-size: 0.875rem; line-height: 1.3; }
 	.team-a { text-align: right; }
 	.open-slot { text-align: center; }
+	.readonly-score { text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
 	.scores { display: grid; grid-template-columns: 48px 16px 48px; align-items: center; text-align: center; }
 	.score { width: 48px; height: 40px; border: 1px solid var(--color-text); border-radius: 0; padding: 4px; font: inherit; text-align: center; color: var(--color-text); background: var(--color-background); }
 	.score[aria-invalid='true'] { border-width: 3px; }

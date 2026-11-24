@@ -1,3 +1,4 @@
+import { assertOwner, PermissionError } from './permissions.js';
 import { randomInt } from 'node:crypto';
 import { MongoClient, ObjectId } from 'mongodb';
 import { DB_URI, DB_NAME } from '$app/env/private';
@@ -54,12 +55,13 @@ export class TournamentInputError extends Error {
 	}
 }
 
-export async function createTournament(input) {
+export async function createTournament(input, user) {
+	if (!objectId(user?.id)) throw new PermissionError(401, 'Bitte melde dich zuerst an.');
 	const result = validateTournament(input);
 	if (!result.valid) throw new TournamentInputError('Ungültige Turnierdaten', result.errors);
 	const db = await getDb();
 	const { insertedId } = await db.collection('tournaments').insertOne({
-		...result.values, teamEntry: null, startTime: null, fields: null,
+		...result.values, ownerId: objectId(user.id), teamEntry: null, startTime: null, fields: null,
 		matchDuration: null, currentRound: 1, status: 'Entwurf', createdAt: new Date()
 	});
 	return insertedId.toHexString();
@@ -70,14 +72,7 @@ export async function getTournament(id) {
 	if (!_id) return null;
 	const db = await getDb();
 	const tournament = await db.collection('tournaments').findOne({ _id });
-	if (tournament && !Number.isInteger(tournament.currentRound)) {
-		const matches = await db.collection('matches').find({ tournamentId: _id }).toArray();
-		const currentRound = currentMatchday(tournament, matches);
-		await db.collection('tournaments').updateOne(
-			{ _id, currentRound: tournament.currentRound ?? null }, { $set: { currentRound } }
-		);
-		return db.collection('tournaments').findOne({ _id });
-	}
+
 	return tournament;
 }
 
@@ -90,26 +85,29 @@ export async function getTeams(id) {
 
 // Die gemeinsame Turnier-Schreiboperation serialisiert Änderungen auch zwischen Serverinstanzen.
 // MongoDB-Transaktionen benötigen ein Replica Set (z. B. Atlas).
-async function changeDraft(id, change) {
-	return changeTournament(id, ['Entwurf'], change);
+async function changeDraft(id, user, change) {
+	return changeTournament(id, user, ['Entwurf'], change);
 }
 
-async function changeTournament(id, statuses, change) {
+async function changeTournament(id, user, statuses, change) {
+	if (!objectId(user?.id)) throw new PermissionError(401, 'Bitte melde dich zuerst an.');
 	const _id = objectId(id);
 	if (!_id) throw new TournamentInputError('Dieses Turnier wurde nicht gefunden.');
 	const db = await getDb();
 	await ensureIndexes(db);
 	return client.withSession((session) => session.withTransaction(async () => {
+		const existing = await db.collection('tournaments').findOne({ _id }, { session });
+		assertOwner(user, existing);
 		const tournament = await db.collection('tournaments').findOneAndUpdate(
-			{ _id, status: { $in: statuses } }, { $inc: { revision: 1 } }, { session, returnDocument: 'after' }
+			{ _id, ownerId: objectId(user.id), status: { $in: statuses } }, { $inc: { revision: 1 } }, { session, returnDocument: 'after' }
 		);
 		if (!tournament) throw new TournamentInputError('Dieses Turnier kann nicht mehr bearbeitet werden.');
 		return change(db, session, tournament);
 	}));
 }
 
-export async function addTeam(id, input) {
-	return changeDraft(id, async (db, session, tournament) => {
+export async function addTeam(id, input, user) {
+	return changeDraft(id, user, async (db, session, tournament) => {
 		if (tournament.teamEntry !== 'manuell') throw new TournamentInputError('Bitte wähle zuerst die manuelle Teamerfassung.');
 		const teams = await db.collection('teams').find({ tournamentId: tournament._id }, { session }).toArray();
 		const result = validateTeam(input, teams, tournament.teamCount);
@@ -122,8 +120,8 @@ export async function addTeam(id, input) {
 	});
 }
 
-export async function removeTeam(id, teamId) {
-	return changeDraft(id, async (db, session, tournament) => {
+export async function removeTeam(id, teamId, user) {
+	return changeDraft(id, user, async (db, session, tournament) => {
 		if (tournament.teamEntry !== 'manuell') throw new TournamentInputError('Die manuelle Teamerfassung ist nicht aktiv.');
 		const _id = objectId(teamId);
 		if (!_id) throw new TournamentInputError('Dieses Team wurde nicht gefunden.');
@@ -132,11 +130,11 @@ export async function removeTeam(id, teamId) {
 	});
 }
 
-export async function updateTournament(id, changes) {
+export async function updateTournament(id, changes, user) {
 	// Kollisionen des Zufallscodes werden durch den eindeutigen Index erkannt und erneut versucht.
 	for (let attempt = 0; attempt < 20; attempt++) {
 		try {
-			return await changeDraft(id, async (db, session, tournament) => {
+			return await changeDraft(id, user, async (db, session, tournament) => {
 				let values;
 				if (Object.hasOwn(changes, 'teamEntry')) {
 					if (!['manuell', 'code'].includes(changes.teamEntry)) throw new TournamentInputError('Bitte wähle ja oder nein.');
@@ -182,9 +180,9 @@ export async function getMatches(id) {
 	return (await db.collection('matches').find({ tournamentId }).sort({ matchNumber: 1 }).toArray()).map(matchView);
 }
 
-export async function createMatchSchedule(id) {
+export async function createMatchSchedule(id, user) {
 	const seed = randomInt(0, 0x100000000);
-	return changeTournament(id, ['Bereit', 'Läuft', 'Abgeschlossen'], async (db, session, tournament) => {
+	return changeTournament(id, user, ['Bereit', 'Läuft', 'Abgeschlossen'], async (db, session, tournament) => {
 		// Gemeinsame Schreibsperre + eindeutiger Index verhindern paralleles Erzeugen.
 		if (await db.collection('matches').findOne({ tournamentId: tournament._id }, { session })) return;
 		if (tournament.status !== 'Bereit') throw new TournamentInputError('Der Spielplan kann jetzt nicht erstellt werden.');
@@ -220,8 +218,8 @@ export async function getMatch(id) {
 	return (await getDb()).collection('matches').findOne({ _id });
 }
 
-export async function saveMatchResults(id, entries) {
-	return changeTournament(id, ['Bereit', 'Läuft', 'Abgeschlossen'], async (db, session, tournament) => {
+export async function saveMatchResults(id, entries, user) {
+	return changeTournament(id, user, ['Bereit', 'Läuft', 'Abgeschlossen'], async (db, session, tournament) => {
 		const raw = await db.collection('matches').find({ tournamentId: tournament._id }, { session }).sort({ matchNumber: 1 }).toArray();
 		if (!raw.length) throw new TournamentInputError('Bitte erstelle zuerst den Spielplan.');
 		const matches = raw.map(matchView);
@@ -239,8 +237,8 @@ export async function saveMatchResults(id, entries) {
 	});
 }
 
-export async function advanceTournamentRound(id, expectedRound) {
-	return changeTournament(id, ['Bereit', 'Läuft', 'Abgeschlossen'], async (db, session, tournament) => {
+export async function advanceTournamentRound(id, expectedRound, user) {
+	return changeTournament(id, user, ['Bereit', 'Läuft', 'Abgeschlossen'], async (db, session, tournament) => {
 		const matches = (await db.collection('matches').find({ tournamentId: tournament._id }, { session }).sort({ matchNumber: 1 }).toArray()).map(matchView);
 		const teams = (await db.collection('teams').find({ tournamentId: tournament._id }, { session }).sort({ createdAt: 1, _id: 1 }).toArray()).map(teamView);
 		const currentRound = currentMatchday(tournament, matches);

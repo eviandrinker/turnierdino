@@ -1,9 +1,14 @@
+import { requireUser } from '#lib/server/auth-http.js';
 import { fail, redirect } from '@sveltejs/kit';
 import { createTournament } from '#lib/server/db.js';
 import { validateTournament } from '#lib/tournament-rules.js';
 
+export const load = (event) => { requireUser(event); return {}; };
+
 export const actions = {
-	default: async ({ request }) => {
+	default: async (event) => {
+		const user = requireUser(event);
+		const { request } = event;
 		const data = await request.formData();
 		const values = Object.fromEntries(
 			['name', 'mode', 'teamCount', 'groupCount', 'qualifiersPerGroup'].map((key) => {
@@ -16,7 +21,7 @@ export const actions = {
 
 		let id;
 		try {
-			id = await createTournament(result.values);
+			id = await createTournament(result.values, user);
 		} catch {
 			return fail(503, {
 				values,

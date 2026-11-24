@@ -75,3 +75,9 @@ h1 {
 .text-input[aria-invalid='true'] { border-width: 2px; }
 .field-error { margin: 8px 0 0; font-size: 0.875rem; font-weight: 600; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.account-form { max-width: 480px; }
+.account-form h1 { font-size: clamp(2rem, 4vw, 3rem); margin-bottom: 32px; }
+.account-form label { display: block; font-weight: 600; margin: 24px 0 8px; }
+.account-form .button { margin-top: 32px; }
+.account-form > p { margin-top: 24px; }
