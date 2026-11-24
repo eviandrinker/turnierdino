@@ -1,2 +1,6 @@
-<h1>Welcome to SvelteKit</h1>
-<p>Visit <a href="https://svelte.dev/docs/kit">svelte.dev/docs/kit</a> to read the documentation</p>
+<script>
+  let { data } = $props();
+</script>
+
+<h1>Turnierdino</h1>
+<p>{data.dbOk ? 'Datenbank verbunden' : 'Keine Verbindung zur Datenbank'}</p>
