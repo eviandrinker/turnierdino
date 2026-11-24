@@ -69,6 +69,7 @@ node --test tests/*.test.js  # alle Tests
 - Feedback bei jeder Aktion: Fehler direkt beim Feld, Erfolgsmeldungen, leere Zustände mit Hinweis
 
 ### Arbeitsweise
+- Für jede Code-Änderung den Ablauf im Skill **`aenderung-umsetzen`** befolgen (`.claude/skills/aenderung-umsetzen/SKILL.md`)
 - Bei grösseren Aufträgen nach den genannten Haltepunkten **anhalten** und berichten
 - Nach jedem Auftrag: geänderte Dateien kurz erklären, ehrlich angeben, was **nicht** getestet wurde (z. B. echte Datenbank, Browser), und eine **Commit-Message** im Stil Conventional Commits vorschlagen (`feat:`, `fix:`, `chore:`)
 - Bei Unsicherheit über SvelteKit-3-Syntax die installierte Version in `node_modules/@sveltejs/kit` prüfen statt zu raten
