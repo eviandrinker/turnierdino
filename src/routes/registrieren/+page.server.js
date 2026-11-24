@@ -3,7 +3,7 @@ import { register, logout, RegistrationError } from '#lib/server/auth.js';
 import { setSessionCookie } from '#lib/server/auth-http.js';
 import { safeTarget, normalizeEmail } from '#lib/auth-rules.js';
 
-export const load = ({ url }) => ({ target: safeTarget(url.searchParams.get('ziel')) });
+export const load = ({ url }) => ({ target: safeTarget(url.searchParams.get('ziel') ?? '/meine-turniere') });
 export const actions = {
 	default: async ({ request, cookies, locals, url }) => {
 		const form = await request.formData();
@@ -19,6 +19,6 @@ export const actions = {
 		}
 		setSessionCookie(cookies, session);
 		locals.user = session.user;
-		redirect(303, safeTarget(url.searchParams.get('ziel')));
+		redirect(303, '/meine-turniere');
 	}
 };

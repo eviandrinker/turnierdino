@@ -11,12 +11,12 @@
 	const complete = $derived(data.teams.length === data.tournament.teamCount);
 	const nameError = $derived(localError || form?.errors?.name);
 
-	function submit({ cancel, action }) {
+	function submit({ cancel, action, formData }) {
 		if (saving) { cancel(); return; }
 		localError = '';
 		const adding = action.search === '?/add';
 		if (adding) {
-			const result = validateTeam({ name }, data.teams, data.tournament.teamCount);
+			const result = validateTeam({ name: formData.get('name') }, data.teams, data.tournament.teamCount);
 			if (!result.valid) {
 				localError = result.errors.name;
 				cancel();
@@ -28,10 +28,10 @@
 		return async ({ result, update }) => {
 			try {
 				await update({ reset: false });
-				if (result.type === 'success' && result.data?.added) name = '';
+				if (result.type === 'success' && (result.data?.added || result.data?.imported)) name = '';
 			} finally { saving = false; }
 			await tick();
-			if (adding || (result.type === 'success' && result.data?.removed)) (nameInput ?? nextButton)?.focus();
+			if (adding || (result.type === 'success' && (result.data?.removed || result.data?.imported))) (nameInput ?? nextButton)?.focus();
 		};
 	}
 </script>
@@ -47,16 +47,33 @@
 	<form method="POST" action="?/add" use:enhance={submit} novalidate class="add-form">
 		<label for="team-name">Team-Name</label>
 		<div class="add-controls">
-			<input class="text-input" id="team-name" name="name" bind:value={name} bind:this={nameInput}
+			<input class="text-input" id="team-name" name="name" list="team-suggestions" bind:value={name} bind:this={nameInput}
 				oninput={() => { localError = ''; if (form) form = null; }} disabled={saving}
 				required minlength="2" maxlength="40" aria-invalid={!!nameError} aria-describedby={nameError ? 'name-error' : undefined} />
+			<datalist id="team-suggestions">{#each data.suggestions as suggestion (suggestion.name)}<option value={suggestion.name}></option>{/each}</datalist>
 			<button class="button button-add" type="submit" disabled={saving}>Team hinzufügen</button>
 		</div>
 		{#if nameError}<p class="field-error" id="name-error" role="alert">{nameError}</p>{/if}
 	</form>
+	{#if data.suggestions.length}
+		<section class="suggestions" aria-labelledby="suggestions-heading">
+			<h2 id="suggestions-heading">Teams aus früheren Turnieren</h2>
+			<div class="chips">
+				{#each data.suggestions as suggestion (suggestion.name)}
+					<form method="POST" action="?/add" use:enhance={submit}>
+						<input type="hidden" name="name" value={suggestion.name} />
+						<button class="chip" disabled={saving} aria-label={`Team hinzufügen: ${suggestion.name}`}>{suggestion.name}</button>
+					</form>
+				{/each}
+			</div>
+			<form method="POST" action="?/importLast" use:enhance={submit}>
+				<button class="button" disabled={saving}>Teams vom letzten Turnier übernehmen</button>
+			</form>
+		</section>
+	{/if}
 {/if}
 
-{#if form?.message}<p role="alert">{form.message}</p>{/if}
+{#if form?.message}<p role={form.imported ? 'status' : 'alert'}>{form.message}</p>{/if}
 <ul class="team-list">
 	{#each data.teams as team (team.id)}
 		<li>
@@ -86,6 +103,13 @@
 </form>
 
 <style>
+	.suggestions { max-width: 800px; margin-block: 24px 40px; }
+	.suggestions h2 { font-size: 20px; margin-bottom: 16px; }
+	.chips { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+	.chip { min-height: 44px; padding: 10px 16px; border: 1px solid var(--color-text); border-radius: 0; background: var(--color-background); color: var(--color-text); cursor: pointer; overflow-wrap: anywhere; }
+	.chip:hover { background: var(--color-text); color: var(--color-background); }
+	.chip:disabled { background: var(--color-surface); color: var(--color-text); cursor: wait; }
+
 	.add-form { max-width: 800px; margin-block: 32px; }
 	label { display: block; font-weight: 600; margin-bottom: 12px; }
 	.add-controls, .team-row { display: flex; gap: 16px; }

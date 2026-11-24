@@ -1,11 +1,23 @@
 import { fail, redirect } from '@sveltejs/kit';
-import { addTeam, removeTeam } from '#lib/server/db.js';
+import { addTeam, removeTeam, getTeamSuggestions, importTeamsFromLastTournament } from '#lib/server/db.js';
 import { requireStep, mutationFailure } from '#lib/server/tournament-flow.js';
 import { validateTeam } from '#lib/team-rules.js';
 
-export const load = (event) => requireStep(event.params.id, 'teams/manuell', event);
+export async function load(event) {
+	const data = await requireStep(event.params.id, 'teams/manuell', event);
+	const suggestions = data.teams.length < data.tournament.teamCount
+		? await getTeamSuggestions(event.locals.user.id, event.params.id) : [];
+	return { ...data, suggestions };
+}
 
 export const actions = {
+	importLast: async (event) => {
+		await requireStep(event.params.id, 'teams/manuell', event);
+		try {
+			const count = await importTeamsFromLastTournament(event.params.id, event.locals.user);
+			return { imported: true, message: `${count} ${count === 1 ? 'Team' : 'Teams'} übernommen` };
+		} catch (error) { return mutationFailure(error); }
+	},
 	add: async (event) => {
 		const { params, request, locals } = event;
 		const { tournament, teams } = await requireStep(params.id, 'teams/manuell', event);

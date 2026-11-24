@@ -1,3 +1,6 @@
+import { tournamentDestination } from '../tournament-list.js';
+import { teamSuggestions, selectTeamImports } from '../team-suggestions.js';
+import { deleteTournamentRecords } from './tournament-records.js';
 import { assertOwner, PermissionError } from './permissions.js';
 import { randomInt } from 'node:crypto';
 import { MongoClient, ObjectId } from 'mongodb';
@@ -35,6 +38,7 @@ export async function getDb() {
 
 async function ensureIndexes(db) {
 	indexes ??= Promise.all([
+		db.collection('tournaments').createIndex({ ownerId: 1, createdAt: -1 }),
 		db.collection('tournaments').createIndex({ joinCode: 1 }, {
 			unique: true, partialFilterExpression: { joinCode: { $type: 'string' } }
 		}),
@@ -247,5 +251,65 @@ export async function advanceTournamentRound(id, expectedRound, user) {
 		await persistMatches(db, session, tournament._id, result.matches);
 		await db.collection('tournaments').updateOne({ _id: tournament._id }, { $set: { currentRound: result.currentRound } }, { session });
 		return result.currentRound;
+	});
+}
+
+export async function getMyTournaments(userId) {
+	const ownerId = objectId(userId);
+	if (!ownerId) throw new PermissionError(401, 'Bitte melde dich zuerst an.');
+	const db = await getDb();
+	const tournaments = await db.collection('tournaments').find({ ownerId }).toArray();
+	if (!tournaments.length) return [];
+	const totals = await db.collection('teams').aggregate([
+		{ $match: { tournamentId: { $in: tournaments.map((t) => t._id) } } },
+		{ $group: { _id: '$tournamentId', count: { $sum: 1 } } }
+	]).toArray();
+	const counts = new Map(totals.map((item) => [item._id.toHexString(), item.count]));
+	return tournaments.map((tournament) => {
+		const id = tournament._id.toHexString();
+		return {
+			id, name: tournament.name, mode: tournament.mode, teamCount: tournament.teamCount,
+			status: tournament.status, createdAt: tournament.createdAt,
+			href: tournamentDestination({ ...tournament, id }, counts.get(id) ?? 0)
+		};
+	});
+}
+
+export async function deleteTournament(id, user) {
+	return changeTournament(id, user, ['Entwurf', 'Bereit', 'Läuft', 'Abgeschlossen'], async (db, session, tournament) => {
+		await deleteTournamentRecords(db, session, tournament, user);
+	});
+}
+
+export async function getTeamSuggestions(userId, currentTournamentId) {
+	const ownerId = objectId(userId), currentId = objectId(currentTournamentId);
+	if (!ownerId) throw new PermissionError(401, 'Bitte melde dich zuerst an.');
+	if (!currentId) throw new TournamentInputError('Dieses Turnier wurde nicht gefunden.');
+	const db = await getDb();
+	const current = await db.collection('tournaments').findOne({ _id: currentId });
+	assertOwner({ id: userId }, current);
+	const tournaments = await db.collection('tournaments').find({ ownerId }).project({ _id: 1, ownerId: 1 }).toArray();
+	const teams = await db.collection('teams').find({ tournamentId: { $in: tournaments.map((t) => t._id) } }).project({ tournamentId: 1, name: 1, createdAt: 1 }).toArray();
+	return teamSuggestions(userId, currentId.toHexString(),
+		tournaments.map((t) => ({ id: t._id.toHexString(), ownerId: t.ownerId.toHexString() })),
+		teams.map((t) => ({ ...t, tournamentId: t.tournamentId.toHexString() }))
+	);
+}
+
+export async function importTeamsFromLastTournament(id, user) {
+	return changeDraft(id, user, async (db, session, tournament) => {
+		if (tournament.teamEntry !== 'manuell') throw new TournamentInputError('Die manuelle Teamerfassung ist nicht aktiv.');
+		const latest = await db.collection('tournaments').findOne(
+			{ ownerId: objectId(user.id), _id: { $ne: tournament._id } },
+			{ session, sort: { createdAt: -1, _id: -1 } }
+		);
+		if (!latest) return 0;
+		const existing = await db.collection('teams').find({ tournamentId: tournament._id }, { session }).toArray();
+		const source = await db.collection('teams').find({ tournamentId: latest._id }, { session }).sort({ createdAt: 1, _id: 1 }).toArray();
+		const selected = selectTeamImports(source, existing, tournament.teamCount);
+		if (selected.length) await db.collection('teams').insertMany(selected.map(({ name }) => ({
+			tournamentId: tournament._id, name, nameKey: normalizeTeamName(name), createdAt: new Date()
+		})), { session });
+		return selected.length;
 	});
 }
