@@ -48,3 +48,30 @@ h1 {
 .step-heading { display: flex; align-items: baseline; gap: 24px; margin-bottom: 56px; }
 .step-heading h1 { margin: 0; font-size: clamp(2.25rem, 5vw, 4rem); }
 .step { flex-shrink: 0; font-size: 1rem; font-weight: 600; }
+
+:root {
+	--color-surface: #eee;
+	--color-secondary: #ddd;
+	--color-secondary-hover: #ccc;
+	--color-add: #176b36;
+	--color-add-hover: #105029;
+	--color-remove: #b42323;
+	--color-remove-hover: #8e1b1b;
+}
+.button-secondary { background: var(--color-secondary); color: var(--color-text); }
+.button-secondary:hover { background: var(--color-secondary-hover); }
+.button-add { background: var(--color-add); }
+.button-add:hover { background: var(--color-add-hover); }
+.button-remove { background: var(--color-remove); }
+.button-remove:hover { background: var(--color-remove-hover); }
+.button:disabled, .button:disabled:hover, fieldset:disabled .button {
+	background: var(--color-secondary);
+	color: var(--color-text);
+	cursor: not-allowed;
+}
+.button-row { display: flex; flex-wrap: wrap; gap: 16px; }
+.tournament-subtitle { font-size: 1.25rem; margin-bottom: 32px; overflow-wrap: anywhere; }
+.text-input { width: 100%; min-height: 52px; padding: 12px 16px; border: 1px solid var(--color-text); border-radius: 0; background: var(--color-background); color: var(--color-text); }
+.text-input[aria-invalid='true'] { border-width: 2px; }
+.field-error { margin: 8px 0 0; font-size: 0.875rem; font-weight: 600; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
