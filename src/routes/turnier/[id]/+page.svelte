@@ -7,14 +7,14 @@
 	import { createResultEditor } from '#lib/result-editor.js';
 	import { validateResult } from '#lib/result-rules.js';
 	import StandingsTable from '#lib/components/StandingsTable.svelte';
+	import TournamentHeader from '#lib/components/TournamentHeader.svelte';
+	import MatchdayTabs from '#lib/components/MatchdayTabs.svelte';
+	import MatchList from '#lib/components/MatchList.svelte';
+	import TeamRegistrationList from '#lib/components/TeamRegistrationList.svelte';
 	let { data, form } = $props();
 	const tournamentId = $derived(data.tournament.id);
 	const canEdit = $derived(data.canEdit);
 	let standingsDialog = $state();
-	let removeDialog = $state();
-	let removeCandidate = $state(null);
-	let removing = $state(false);
-	let removeError = $state('');
 	let snapshot = $state(null);
 	let edits = $state({});
 	let editor = $state.raw(null);
@@ -22,7 +22,6 @@
 	let liveMessage = $state('');
 	let selectedDay = $state(untrack(() => currentMatchday(data.tournament, data.matches)));
 	let lastCurrentRound = $state(untrack(() => selectedDay));
-	const modes = { liga: 'Liga', gruppen_ko: 'Gruppen + K.-o.', ko: 'Nur K.-o.' };
 	const board = $derived(snapshot && snapshot.revision >= (data.tournament.revision ?? 0)
 		? snapshot
 		: { matches: data.matches, currentRound: currentMatchday(data.tournament, data.matches), status: data.tournament.status, revision: data.tournament.revision ?? 0 });
@@ -41,7 +40,6 @@
 	const dirty = $derived(Object.values(edits).some((edit) => edit.dirty || edit.inFlight));
 	const interactionActive = $derived(Object.values(edits).some((edit) => edit.dirty || edit.focused || edit.inFlight));
 	const readyForNext = $derived(canAdvance(board.matches, board.currentRound));
-	const createdDate = $derived(new Intl.DateTimeFormat('de-CH', { timeZone: 'Europe/Zurich' }).format(new Date(data.tournament.createdAt)));
 	const tableMatches = $derived(board.matches.map((match) => {
 		const edit = edits[match.id];
 		if (!edit?.optimistic || edit.error || edit.expected.teamAId !== match.teamAId || edit.expected.teamBId !== match.teamBId) return match;
@@ -69,23 +67,6 @@
 		if (currentEditor) untrack(() => currentEditor.sync());
 	});
 
-	function confirmRemove(team) {
-		removeCandidate = team;
-		removeError = '';
-		removeDialog?.showModal();
-	}
-	function removeSubmit({ cancel }) {
-		if (removing) { cancel(); return; }
-		removing = true;
-		removeError = '';
-		return async ({ result, update }) => {
-			try {
-				if (result.type === 'failure') removeError = result.data?.message ?? 'Das Team konnte nicht entfernt werden.';
-				await update({ reset: false });
-				if (result.type === 'success') { removeDialog?.close(); removeCandidate = null; }
-			} finally { removing = false; }
-		};
-	}
 	function acceptSnapshot(next) {
 		if (next && next.revision >= board.revision) snapshot = next;
 	}
@@ -96,15 +77,6 @@
 		if (source?.type === 'group') return `${source.rank}. Gruppe ${source.group}`;
 		if (source?.type === 'winner') return `Sieger Spiel ${source.matchNumber}`;
 		return 'Noch offen';
-	}
-	function statusText(match) {
-		const edit = edits[match.id];
-		if (edit?.error) return edit.error;
-		if (edit?.inFlight || edit?.status === 'saving') return 'Speichert …';
-		if (edit?.status === 'incomplete') return 'unvollständig';
-		if (edit?.status === 'pending') return 'Speichern ausstehend …';
-		if (edit?.status === 'saved' || match.status === 'Beendet') return 'Gespeichert';
-		return '';
 	}
 	function submit({ cancel, action }) {
 		if (!canEdit || saving || (action.search === '?/nextRound' && dirty)) { cancel(); return; }
@@ -164,20 +136,8 @@
 </script>
 
 <svelte:head><title>{data.tournament.name} – Turnierdino</title></svelte:head>
-<header class="tournament-header">
-	<h1>{data.tournament.name}</h1>
-	<div class="tournament-meta">
-		<p>{modes[data.tournament.mode]} · Erstellt am {createdDate} · Start {data.tournament.startTime ?? 'noch offen'}{data.tournament.startTime ? ' Uhr' : ''}</p>
-		<span class="status" aria-live="polite">{board.status}</span>
-	</div>
-	{#if winnerId}
-		<div class="winner" role="status">
-			<span class="winner-label">Turniersieger</span>
-			<strong>{names.get(winnerId)}</strong>
-		</div>
-	{/if}
-	{#if canEdit && data.tournament.teamEntry === 'code'}<a href={`/turnier/${data.tournament.id}/code`}>Code zum Teilen</a>{/if}
-</header>
+<TournamentHeader tournament={data.tournament} status={board.status} {canEdit}
+	winnerName={winnerId ? (names.get(winnerId) ?? '') : null} />
 {#if liveMessage}<p role="status">{liveMessage}</p>{/if}
 {#if data.justRegistered}<p class="notice" role="status">Dein Team ist angemeldet</p>{/if}
 {#if form?.removed}<p role="status">{form.message}</p>
@@ -187,30 +147,8 @@
 	{#if data.creationIncomplete}
 		<p>Dieses Turnier wird noch vorbereitet.</p>
 	{:else}
-		<section class="registrations" aria-labelledby="registrations-heading">
-			<h2 id="registrations-heading" aria-live="polite">{data.teams.length} von {data.tournament.teamCount} Teams angemeldet</h2>
-			{#if data.teams.length}
-				<ul class="registration-list">
-					{#each data.teams as team (team.id)}
-						<li>
-							<span>{team.name}{#if data.ownTeam?.id === team.id} <small>(dein Team)</small>{/if}</span>
-							{#if canEdit && data.tournament.teamEntry === 'code'}
-								<button class="link-button" type="button" aria-label={`Team entfernen: ${team.name}`} onclick={() => confirmRemove(team)}>Entfernen</button>
-							{/if}
-						</li>
-					{/each}
-				</ul>
-			{:else}
-				<p>Noch keine Teams angemeldet.</p>
-			{/if}
-			{#if !canEdit && data.tournament.teamEntry === 'code'}
-				{#if data.ownTeam}
-					<a href={`/beitreten/${data.tournament.id}`}>Anmeldung verwalten</a>
-				{:else if data.teams.length < data.tournament.teamCount && data.tournament.status === 'Bereit'}
-					<a class="button" href={`/beitreten/${data.tournament.id}`}>Team anmelden</a>
-				{/if}
-			{/if}
-		</section>
+		<TeamRegistrationList tournament={data.tournament} teams={data.teams} ownTeamId={data.ownTeam?.id ?? null}
+			canRemove={canEdit && data.tournament.teamEntry === 'code'} showJoinLinks={!canEdit && data.tournament.teamEntry === 'code'} />
 	{/if}
 	{#if !data.creationIncomplete && data.teams.length === data.tournament.teamCount}
 		{#if canEdit}
@@ -223,18 +161,7 @@
 		{/if}
 	{/if}
 {:else}
-	<nav class="matchday-nav" aria-label="Spieltage">
-		{#each days as day (day.key)}
-			<button type="button" class:active={selectedDay === day.number} class:current={board.currentRound === day.number}
-				aria-current={board.currentRound === day.number ? 'step' : undefined}
-				disabled={day.number > board.currentRound}
-				title={day.number > board.currentRound ? `Wird freigeschaltet, sobald Spieltag ${day.number - 1} fertig ist` : day.label}
-				onclick={() => { selectedDay = day.number; }}>
-				{day.label}
-				<span class="current-marker">aktuell</span>
-			</button>
-		{/each}
-	</nav>
+	<MatchdayTabs {days} selected={selectedDay} current={board.currentRound} onselect={(number) => { selectedDay = number; }} />
 	<div class="tournament-grid">
 		<section class="standings" aria-labelledby="standings-heading">
 			<div class="standings-heading">
@@ -267,44 +194,8 @@
 		<section class="schedule" aria-labelledby="schedule-heading">
 			<h2 id="schedule-heading">Spiele</h2>
 			{#if canEdit}<noscript><p>Bitte aktiviere JavaScript, um Resultate automatisch zu speichern.</p></noscript>{/if}
-			<ol class="match-list">
-				{#each shownDay?.matches ?? [] as match (match.id)}
-					<li>
-						<p class="match-meta">{match.scheduledTime}{match.scheduledDay ? ` (+${match.scheduledDay} Tage)` : ''} · Feld {match.field} · Spiel {match.matchNumber}{match.phase === 'gruppe' ? ` · Gruppe ${match.group}` : ''}</p>
-						<div class="match-row">
-							<span class="team team-a">{label(match, 'A')}</span>
-							{#if canEdit && match.teamAId && match.teamBId && selectedDay <= board.currentRound}
-								<div class="scores">
-									{#each ['a', 'b'] as side}
-										{#if side === 'b'}<span aria-hidden="true">:</span>{/if}
-										<input class="score" type="text" inputmode="numeric" pattern="[0-9]{1,2}" maxlength="2"
-											value={edits[match.id]?.[side] ?? match[side === 'a' ? 'scoreA' : 'scoreB'] ?? ''}
-											oninput={(event) => editor?.edit(match.id, side, event.currentTarget.value)}
-											data-match-id={match.id}
-											onfocus={() => editor?.focus(match.id)}
-											onblur={(event) => editor?.blur(match.id, {
-												retainFocus: event.relatedTarget?.getAttribute?.('data-match-id') === match.id
-											})}
-											disabled={!editor || saving}
-											aria-label={`Tore ${label(match, side.toUpperCase())}, Spiel ${match.matchNumber}`}
-											aria-invalid={!!edits[match.id]?.error} aria-describedby={`result-status-${match.id}`} />
-									{/each}
-								</div>
-							{:else if match.teamAId && match.teamBId}
-								<span class="readonly-score" aria-label="Resultat">{match.scoreA ?? '–'} : {match.scoreB ?? '–'}</span>
-							{:else}<span class="open-slot">–</span>{/if}
-							<span class="team">{label(match, 'B')}</span>
-						</div>
-						{#if canEdit}<p class="result-status" class:error={!!edits[match.id]?.error} id={`result-status-${match.id}`} aria-live="polite">{statusText(match)}</p>{/if}
-						{#if edits[match.id]?.error}
-							<div class="error-actions">
-								<button class="reset" type="button" onclick={() => editor?.retry(match.id)}>Erneut versuchen</button>
-								<button class="reset" type="button" onclick={() => editor?.reset(match.id)}>Gespeicherten Stand übernehmen</button>
-							</div>
-						{/if}
-					</li>
-				{/each}
-			</ol>
+			<MatchList matches={shownDay?.matches ?? []} {label} editable={canEdit && selectedDay <= board.currentRound} showStatus={canEdit}
+				{edits} {editor} disabled={!editor || saving} />
 			{#if canEdit && readyForNext}
 				<form method="POST" action="?/nextRound" use:enhance={submit}>
 					<input type="hidden" name="currentRound" value={board.currentRound} />
@@ -314,22 +205,6 @@
 			{/if}
 		</section>
 	</div>
-{/if}
-
-{#if canEdit && !board.matches.length && data.tournament.teamEntry === 'code'}
-	<dialog class="confirm-dialog" bind:this={removeDialog} aria-labelledby="remove-heading" oncancel={(event) => { if (removing) event.preventDefault(); }}>
-		<h2 id="remove-heading">Team entfernen?</h2>
-		<p>«{removeCandidate?.name}» wird aus diesem Turnier entfernt. Der Platz wird wieder frei.</p>
-		{#if removeError}<p role="alert">{removeError}</p>{/if}
-		<form method="POST" action="?/removeTeam" use:enhance={removeSubmit}>
-			<input type="hidden" name="teamId" value={removeCandidate?.id ?? ''} />
-			<input type="hidden" name="confirmed" value="yes" />
-			<div class="button-row">
-				<button class="button button-secondary" type="button" disabled={removing} onclick={() => removeDialog?.close()}>Abbrechen</button>
-				<button class="button button-remove" disabled={removing}>{removing ? 'Wird entfernt …' : 'Team entfernen'}</button>
-			</div>
-		</form>
-	</dialog>
 {/if}
 
 {#if data.tournament.mode !== 'ko'}
@@ -390,32 +265,9 @@
 	}
 
 	.notice { padding: 12px 16px; background: var(--color-surface); font-weight: 600; }
-	.registrations { max-width: 640px; margin-bottom: 32px; }
-	.registration-list { list-style: none; padding: 0; margin: 0 0 24px; }
-	.registration-list li { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 48px; border-bottom: 1px solid var(--color-secondary); }
-	.registration-list span { min-width: 0; overflow-wrap: anywhere; }
-	.link-button { min-height: 44px; padding: 0 8px; border: 0; background: transparent; color: var(--color-text); text-decoration: underline; cursor: pointer; }
-	.confirm-dialog { width: min(520px, calc(100% - 32px)); padding: 28px; border: 1px solid var(--color-text); border-radius: 0; background: var(--color-background); color: var(--color-text); }
-	.confirm-dialog::backdrop { background: rgb(0 0 0 / 45%); }
-	.confirm-dialog p { line-height: 1.6; overflow-wrap: anywhere; margin-block: 20px 28px; }
 
 	/* Seitenlokale Abstände; der Hero der Startseite bleibt unverändert. */
 	:global(main:has(> .tournament-header)) { padding-block: 40px; }
-	.tournament-header { margin-bottom: 32px; }
-	h1 { font-size: 36px; line-height: 1.15; margin: 0 0 8px; overflow-wrap: anywhere; }
-	.tournament-meta { display: flex; align-items: center; gap: 12px; font-size: 0.875rem; }
-	.tournament-meta p { margin: 0; }
-	.status { flex-shrink: 0; padding: 4px 8px; background: var(--color-surface); font-weight: 700; }
-	.winner { margin-top: 16px; padding: 16px 20px; border: 1px solid var(--color-text); max-width: 640px; }
-	.winner-label { display: block; margin-bottom: 6px; font-size: 0.75rem; }
-	.winner strong { display: block; font-size: 28px; line-height: 1.2; font-weight: 800; overflow-wrap: anywhere; }
-	.tournament-header > a { display: inline-block; margin-top: 8px; font-size: 0.875rem; }
-	.matchday-nav { display: flex; gap: 20px; overflow-x: auto; margin-bottom: 32px; }
-	.matchday-nav button { flex-shrink: 0; min-height: 40px; padding: 8px 0; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--color-text); cursor: pointer; }
-	.matchday-nav button.active { border-bottom-color: var(--color-text); font-weight: 700; }
-	.current-marker { display: none; margin-left: 6px; font-size: 0.6875rem; font-weight: 400; }
-	.matchday-nav button.current .current-marker { display: inline; }
-	.matchday-nav button:disabled { color: #888; cursor: not-allowed; }
 	.tournament-grid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 64px; align-items: start; }
 	.schedule { grid-column: 1; grid-row: 1; min-width: 0; }
 	.standings { grid-column: 2; grid-row: 1; min-width: 0; }
@@ -425,48 +277,17 @@
 	.standings :global(table) { font-size: 0.8125rem; line-height: 1.25; }
 	.standings :global(th), .standings :global(td) { padding: 12px 5px; }
 	.standings :global(th:nth-child(2)), .standings :global(tbody th) { min-width: 80px; }
-	.match-list, .round-list { list-style: none; padding: 0; margin: 0 0 12px; }
-	.match-list { display: grid; grid-template-columns: minmax(180px, max-content) minmax(0, 1fr) 82px; column-gap: 12px; }
-	.match-list li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--color-secondary); }
-	.match-meta { min-width: 180px; white-space: nowrap; margin: 0; color: #666; font-size: 0.6875rem; line-height: 1.4; }
-	.match-row { display: grid; grid-template-columns: minmax(0, 1fr) 112px minmax(0, 1fr); gap: 8px; align-items: center; }
-	.team { min-width: 0; overflow-wrap: anywhere; font-size: 0.875rem; line-height: 1.3; }
-	.team-a { text-align: right; }
-	.open-slot { text-align: center; }
-	.readonly-score { text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
-	.scores { display: grid; grid-template-columns: 48px 16px 48px; align-items: center; text-align: center; }
-	.score { width: 48px; height: 40px; border: 1px solid var(--color-text); border-radius: 0; padding: 4px; font: inherit; text-align: center; color: var(--color-text); background: var(--color-background); }
-	.score[aria-invalid='true'] { border-width: 3px; }
+	.round-list { list-style: none; padding: 0; margin: 0 0 12px; }
 	.result-status { margin: 0; font-size: 0.6875rem; line-height: 1.4; color: #666; overflow-wrap: anywhere; }
-	.result-status.error { color: var(--color-remove); }
 	.schedule form > .result-status { margin-top: 8px; }
-	.error-actions { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
-	.reset { min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--color-text); font-size: 0.75rem; text-decoration: underline; cursor: pointer; }
 	.table-note { margin: 12px 0 0; font-size: 0.6875rem; line-height: 1.4; }
 	.round-list li { padding: 8px 12px; background: var(--color-surface); margin-bottom: 6px; font-size: 0.8125rem; }
 	.round-list p { margin: 4px 0; overflow-wrap: anywhere; }
 	@media (min-width: 768px) and (max-width: 1100px) {
 		.tournament-grid { gap: 32px; }
-		.match-list { display: block; }
-		.match-list li { grid-template-columns: minmax(0, 1fr) 64px; gap: 8px; }
-		.match-meta { grid-column: 1 / -1; }
-		.error-actions { grid-column: 1 / -1; }
-		.match-row { gap: 4px; }
-		.team { font-size: 0.8125rem; }
 	}
 	@media (max-width: 767px) {
-		h1 { font-size: 28px; }
-		.tournament-meta { flex-wrap: wrap; gap: 6px 10px; }
-		.matchday-nav button { min-height: 44px; }
 		.tournament-grid { display: flex; flex-direction: column; gap: 24px; }
 		.standings, .schedule { width: 100%; }
-		.match-list { display: block; }
-		.match-list li { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 16px 0; }
-		.match-meta { grid-column: 1; grid-row: 1; min-width: 0; font-size: 0.6875rem; }
-		.winner strong { font-size: 24px; }
-		.match-row { grid-column: 1 / -1; grid-row: 2; }
-		.match-list .result-status { grid-column: 1; grid-row: 3; text-align: right; }
-		.score { height: 44px; }
-		.error-actions { grid-column: 1 / -1; }
 	}
 </style>
