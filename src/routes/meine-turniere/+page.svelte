@@ -24,9 +24,30 @@
 	{#each tournamentFilters as filter (filter.key)}
 		<a href={`?filter=${filter.key}`} class:active={data.selected === filter.key} aria-current={data.selected === filter.key ? 'page' : undefined}>{filter.label} ({data.counts[filter.key]})</a>
 	{/each}
+	<a href="?filter=teilnahmen" class:active={data.selected === 'teilnahmen'} aria-current={data.selected === 'teilnahmen' ? 'page' : undefined}>Teilnahmen ({data.counts.teilnahmen})</a>
 </nav>
 {#if form?.deleted}<p role="status">{form.message}</p>{/if}
-{#if data.counts.all === 0}
+{#if data.selected === 'teilnahmen'}
+	{#if data.participations.length === 0}
+		<div class="empty">
+			<h2>Du hast noch kein Team angemeldet</h2>
+			<a class="button" href="/beitreten">Turnier beitreten</a>
+		</div>
+	{:else}
+		<div class="cards">
+			{#each data.participations as tournament (tournament.id)}
+				<article class="card">
+					<div class="card-heading">
+						<h2><a class="card-link" href={tournament.href}>{tournament.name}</a></h2>
+						<span class="badge">{tournament.status}</span>
+					</div>
+					<p>Dein Team: <strong>{tournament.teamName}</strong></p>
+					<p>{modes[tournament.mode]} · {tournament.teamCount} Teams{tournament.startTime ? ` · Start ${tournament.startTime} Uhr` : ''}</p>
+				</article>
+			{/each}
+		</div>
+	{/if}
+{:else if data.counts.all === 0}
 	<div class="empty">
 		<h2>Du hast noch keine Turniere</h2>
 		<a class="button" href="/turnier/neu">Turnier erstellen</a>

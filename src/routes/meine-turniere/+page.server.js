@@ -1,12 +1,19 @@
 import { fail } from '@sveltejs/kit';
 import { requireUser } from '#lib/server/auth-http.js';
-import { getMyTournaments, deleteTournament } from '#lib/server/db.js';
+import { getMyTournaments, deleteTournament, getParticipations } from '#lib/server/db.js';
 import { mutationFailure } from '#lib/server/tournament-flow.js';
 import { tournamentList } from '#lib/tournament-list.js';
 
 export async function load(event) {
 	const user = requireUser(event);
-	return tournamentList(await getMyTournaments(user.id), event.url.searchParams.get('filter'));
+	const filter = event.url.searchParams.get('filter');
+	const [own, participations] = await Promise.all([getMyTournaments(user.id), getParticipations(user.id)]);
+	const list = tournamentList(own, filter);
+	return {
+		...list, participations,
+		selected: filter === 'teilnahmen' ? 'teilnahmen' : list.selected,
+		counts: { ...list.counts, teilnahmen: participations.length }
+	};
 }
 export const actions = {
 	delete: async (event) => {

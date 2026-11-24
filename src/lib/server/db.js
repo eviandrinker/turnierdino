@@ -1,3 +1,4 @@
+import { validateTeamRegistration, registrationClosedMessage, openTournamentList } from '../registration-rules.js';
 import { tournamentDestination } from '../tournament-list.js';
 import { teamSuggestions, selectTeamImports } from '../team-suggestions.js';
 import { deleteTournamentRecords } from './tournament-records.js';
@@ -43,6 +44,10 @@ async function ensureIndexes(db) {
 			unique: true, partialFilterExpression: { joinCode: { $type: 'string' } }
 		}),
 		db.collection('teams').createIndex({ tournamentId: 1, nameKey: 1 }, { unique: true }),
+		db.collection('teams').createIndex({ tournamentId: 1, registeredBy: 1 }, {
+			unique: true, partialFilterExpression: { registeredBy: { $type: 'objectId' } }
+		}),
+		db.collection('teams').createIndex({ registeredBy: 1, tournamentId: 1 }),
 		db.collection('matches').createIndex({ tournamentId: 1, matchNumber: 1 }, { unique: true })
 	]);
 	try { await indexes; } catch (error) { indexes = undefined; throw error; }
@@ -118,7 +123,7 @@ export async function addTeam(id, input, user) {
 		if (!result.valid) throw new TournamentInputError('Bitte prüfe den Team-Namen.', result.errors);
 		const { insertedId } = await db.collection('teams').insertOne({
 			tournamentId: tournament._id, name: result.values.name,
-			nameKey: normalizeTeamName(result.values.name), createdAt: new Date()
+			nameKey: normalizeTeamName(result.values.name), registeredBy: null, createdAt: new Date()
 		}, { session });
 		return insertedId.toHexString();
 	});
@@ -308,8 +313,112 @@ export async function importTeamsFromLastTournament(id, user) {
 		const source = await db.collection('teams').find({ tournamentId: latest._id }, { session }).sort({ createdAt: 1, _id: 1 }).toArray();
 		const selected = selectTeamImports(source, existing, tournament.teamCount);
 		if (selected.length) await db.collection('teams').insertMany(selected.map(({ name }) => ({
-			tournamentId: tournament._id, name, nameKey: normalizeTeamName(name), createdAt: new Date()
+			tournamentId: tournament._id, name, nameKey: normalizeTeamName(name), registeredBy: null, createdAt: new Date()
 		})), { session });
 		return selected.length;
 	});
+}
+
+export async function findTournamentByCode(code) {
+	if (typeof code !== 'string' || !/^\d{6}$/.test(code)) return null;
+	return (await getDb()).collection('tournaments').findOne({ joinCode: code });
+}
+
+export async function getRegistrationDetails(id, user) {
+	const tournament = await getTournament(id);
+	if (!tournament) return null;
+	const teams = await getTeams(id);
+	const hasMatches = !!await (await getDb()).collection('matches').findOne({ tournamentId: tournament._id }, { projection: { _id: 1 } });
+	const mine = teams.find((team) => user?.id && team.registeredBy?.toString() === user.id);
+	return {
+		tournament: { id: tournament._id.toHexString(), name: tournament.name, mode: tournament.mode,
+			startTime: tournament.startTime, teamCount: tournament.teamCount, status: tournament.status },
+		teams: teams.map((team) => ({ id: team._id.toHexString(), name: team.name })),
+		ownTeam: mine ? { id: mine._id.toHexString(), name: mine.name } : null,
+		canWithdraw: !hasMatches && !tournament.planCreatedAt,
+		closedMessage: registrationClosedMessage(tournament, teams.length, hasMatches)
+	};
+}
+
+// Dieselbe Turnier-Schreibsperre wie bei Spielplanerstellung und Besitzer-Änderungen.
+async function changeRegistration(id, user, change) {
+	if (!objectId(user?.id)) throw new PermissionError(401, 'Bitte melde dich zuerst an.');
+	const _id = objectId(id);
+	if (!_id) throw new TournamentInputError('Dieses Turnier wurde nicht gefunden.');
+	const db = await getDb();
+	await ensureIndexes(db);
+	return client.withSession((session) => session.withTransaction(async () => {
+		const tournament = await db.collection('tournaments').findOneAndUpdate(
+			{ _id }, { $inc: { revision: 1 } }, { session, returnDocument: 'after' }
+		);
+		if (!tournament) throw new TournamentInputError('Dieses Turnier wurde nicht gefunden.');
+		return change(db, session, tournament);
+	}));
+}
+
+export async function registerTeam(id, input, user) {
+	return changeRegistration(id, user, async (db, session, tournament) => {
+		const teams = await db.collection('teams').find({ tournamentId: tournament._id }, { session }).toArray();
+		const hasMatches = !!await db.collection('matches').findOne({ tournamentId: tournament._id }, { session });
+		const result = validateTeamRegistration(tournament, teams, hasMatches, user.id, input);
+		if (!result.valid) throw new TournamentInputError(result.message, result.errors);
+		await db.collection('teams').insertOne({ tournamentId: tournament._id, name: result.values.name,
+			nameKey: normalizeTeamName(result.values.name), registeredBy: objectId(user.id), createdAt: new Date()
+		}, { session });
+	});
+}
+
+export async function unregisterTeam(id, user) {
+	return changeRegistration(id, user, async (db, session, tournament) => {
+		const hasMatches = await db.collection('matches').findOne({ tournamentId: tournament._id }, { session });
+		if (hasMatches || tournament.planCreatedAt) throw new TournamentInputError('Der Spielplan existiert bereits. Du kannst dein Team nicht mehr abmelden.');
+		const result = await db.collection('teams').deleteOne({ tournamentId: tournament._id, registeredBy: objectId(user.id) }, { session });
+		if (!result.deletedCount) throw new TournamentInputError('Du hast in diesem Turnier kein Team angemeldet.');
+	});
+}
+
+export async function removeRegisteredTeam(id, teamId, user) {
+	return changeTournament(id, user, ['Entwurf', 'Bereit', 'Läuft', 'Abgeschlossen'], async (db, session, tournament) => {
+		const hasMatches = await db.collection('matches').findOne({ tournamentId: tournament._id }, { session });
+		if (tournament.teamEntry !== 'code' || hasMatches || tournament.planCreatedAt) throw new TournamentInputError('Teams können nur vor der Spielplanerstellung entfernt werden.');
+		const _id = objectId(teamId);
+		const result = _id ? await db.collection('teams').deleteOne({ _id, tournamentId: tournament._id }, { session }) : { deletedCount: 0 };
+		if (!result.deletedCount) throw new TournamentInputError('Dieses Team wurde nicht gefunden.');
+	});
+}
+
+export async function getMyRegisteredTeam(id, userId) {
+	if (!objectId(id) || !objectId(userId)) return null;
+	const team = await (await getDb()).collection('teams').findOne({ tournamentId: objectId(id), registeredBy: objectId(userId) });
+	return team ? { id: team._id.toHexString(), name: team.name } : null;
+}
+
+export async function getOpenTournaments() {
+	const db = await getDb();
+	const rows = await db.collection('tournaments').aggregate([
+		{ $match: { teamEntry: 'code', status: 'Bereit', planCreatedAt: null } },
+		{ $lookup: { from: 'matches', localField: '_id', foreignField: 'tournamentId', pipeline: [{ $limit: 1 }, { $project: { _id: 1 } }], as: 'games' } },
+		{ $match: { 'games.0': { $exists: false } } },
+		{ $lookup: { from: 'teams', localField: '_id', foreignField: 'tournamentId', pipeline: [{ $count: 'total' }], as: 'registrations' } },
+		{ $set: { registeredCount: { $ifNull: [{ $arrayElemAt: ['$registrations.total', 0] }, 0] } } },
+		{ $match: { $expr: { $lt: ['$registeredCount', '$teamCount'] } } },
+		{ $set: { available: { $subtract: ['$teamCount', '$registeredCount'] } } },
+		{ $sort: { available: -1, createdAt: -1, _id: 1 } }, { $limit: 50 },
+		{ $project: { name: 1, mode: 1, startTime: 1, teamCount: 1, registeredCount: 1, createdAt: 1, status: 1, teamEntry: 1 } }
+	]).toArray();
+	return openTournamentList(rows.map((row) => ({ ...row, hasMatches: false })));
+}
+
+export async function getParticipations(userId) {
+	const registeredBy = objectId(userId);
+	if (!registeredBy) throw new PermissionError(401, 'Bitte melde dich zuerst an.');
+	const db = await getDb();
+	const teams = await db.collection('teams').find({ registeredBy }).toArray();
+	if (!teams.length) return [];
+	const tournaments = await db.collection('tournaments').find({ _id: { $in: teams.map((team) => team.tournamentId) } }).toArray();
+	const byId = new Map(teams.map((team) => [team.tournamentId.toHexString(), team.name]));
+	return tournaments.map((tournament) => ({ id: tournament._id.toHexString(), name: tournament.name,
+		mode: tournament.mode, teamCount: tournament.teamCount, status: tournament.status, createdAt: tournament.createdAt,
+		startTime: tournament.startTime, teamName: byId.get(tournament._id.toHexString()), href: `/turnier/${tournament._id.toHexString()}`
+	})).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt) || a.id.localeCompare(b.id));
 }

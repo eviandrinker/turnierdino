@@ -11,6 +11,10 @@
 	const tournamentId = $derived(data.tournament.id);
 	const canEdit = $derived(data.canEdit);
 	let standingsDialog = $state();
+	let removeDialog = $state();
+	let removeCandidate = $state(null);
+	let removing = $state(false);
+	let removeError = $state('');
 	let snapshot = $state(null);
 	let edits = $state({});
 	let editor = $state.raw(null);
@@ -65,6 +69,23 @@
 		if (currentEditor) untrack(() => currentEditor.sync());
 	});
 
+	function confirmRemove(team) {
+		removeCandidate = team;
+		removeError = '';
+		removeDialog?.showModal();
+	}
+	function removeSubmit({ cancel }) {
+		if (removing) { cancel(); return; }
+		removing = true;
+		removeError = '';
+		return async ({ result, update }) => {
+			try {
+				if (result.type === 'failure') removeError = result.data?.message ?? 'Das Team konnte nicht entfernt werden.';
+				await update({ reset: false });
+				if (result.type === 'success') { removeDialog?.close(); removeCandidate = null; }
+			} finally { removing = false; }
+		};
+	}
 	function acceptSnapshot(next) {
 		if (next && next.revision >= board.revision) snapshot = next;
 	}
@@ -158,20 +179,48 @@
 	{#if canEdit && data.tournament.teamEntry === 'code'}<a href={`/turnier/${data.tournament.id}/code`}>Code zum Teilen</a>{/if}
 </header>
 {#if liveMessage}<p role="status">{liveMessage}</p>{/if}
-{#if form?.message}<p role="alert">{form.message}</p>{/if}
+{#if data.justRegistered}<p class="notice" role="status">Dein Team ist angemeldet</p>{/if}
+{#if form?.removed}<p role="status">{form.message}</p>
+{:else if form?.message}<p role="alert">{form.message}</p>{/if}
 
 {#if !board.matches.length}
 	{#if data.creationIncomplete}
 		<p>Dieses Turnier wird noch vorbereitet.</p>
-	{:else if data.teams.length !== data.tournament.teamCount}
-		<p aria-live="polite">Es sind erst {data.teams.length} von {data.tournament.teamCount} Teams angemeldet</p>
-	{:else if canEdit}
-		<p>Alle {data.tournament.teamCount} Teams sind angemeldet.</p>
-		<form method="POST" action="?/generate" use:enhance={submit}>
-			<button class="button" disabled={saving}>{saving ? 'Turnierplan wird erstellt…' : 'Spielplan erstellen'}</button>
-		</form>
 	{:else}
-		<p>Alle Teams sind angemeldet. Der Besitzer erstellt den Spielplan.</p>
+		<section class="registrations" aria-labelledby="registrations-heading">
+			<h2 id="registrations-heading" aria-live="polite">{data.teams.length} von {data.tournament.teamCount} Teams angemeldet</h2>
+			{#if data.teams.length}
+				<ul class="registration-list">
+					{#each data.teams as team (team.id)}
+						<li>
+							<span>{team.name}{#if data.ownTeam?.id === team.id} <small>(dein Team)</small>{/if}</span>
+							{#if canEdit && data.tournament.teamEntry === 'code'}
+								<button class="link-button" type="button" aria-label={`Team entfernen: ${team.name}`} onclick={() => confirmRemove(team)}>Entfernen</button>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{:else}
+				<p>Noch keine Teams angemeldet.</p>
+			{/if}
+			{#if !canEdit && data.tournament.teamEntry === 'code'}
+				{#if data.ownTeam}
+					<a href={`/beitreten/${data.tournament.id}`}>Anmeldung verwalten</a>
+				{:else if data.teams.length < data.tournament.teamCount && data.tournament.status === 'Bereit'}
+					<a class="button" href={`/beitreten/${data.tournament.id}`}>Team anmelden</a>
+				{/if}
+			{/if}
+		</section>
+	{/if}
+	{#if !data.creationIncomplete && data.teams.length === data.tournament.teamCount}
+		{#if canEdit}
+			<p>Alle {data.tournament.teamCount} Teams sind angemeldet.</p>
+			<form method="POST" action="?/generate" use:enhance={submit}>
+				<button class="button" disabled={saving}>{saving ? 'Turnierplan wird erstellt…' : 'Spielplan erstellen'}</button>
+			</form>
+		{:else}
+			<p>Alle Teams sind angemeldet. Der Besitzer erstellt den Spielplan.</p>
+		{/if}
 	{/if}
 {:else}
 	<nav class="matchday-nav" aria-label="Spieltage">
@@ -267,6 +316,22 @@
 	</div>
 {/if}
 
+{#if canEdit && !board.matches.length && data.tournament.teamEntry === 'code'}
+	<dialog class="confirm-dialog" bind:this={removeDialog} aria-labelledby="remove-heading" oncancel={(event) => { if (removing) event.preventDefault(); }}>
+		<h2 id="remove-heading">Team entfernen?</h2>
+		<p>«{removeCandidate?.name}» wird aus diesem Turnier entfernt. Der Platz wird wieder frei.</p>
+		{#if removeError}<p role="alert">{removeError}</p>{/if}
+		<form method="POST" action="?/removeTeam" use:enhance={removeSubmit}>
+			<input type="hidden" name="teamId" value={removeCandidate?.id ?? ''} />
+			<input type="hidden" name="confirmed" value="yes" />
+			<div class="button-row">
+				<button class="button button-secondary" type="button" disabled={removing} onclick={() => removeDialog?.close()}>Abbrechen</button>
+				<button class="button button-remove" disabled={removing}>{removing ? 'Wird entfernt …' : 'Team entfernen'}</button>
+			</div>
+		</form>
+	</dialog>
+{/if}
+
 {#if data.tournament.mode !== 'ko'}
 	<dialog id="standings-dialog" class="standings-modal" bind:this={standingsDialog} aria-labelledby="modal-table-title">
 		<header class="modal-heading">
@@ -323,6 +388,16 @@
 		.modal-heading h2 { font-size: 24px; }
 		.standings-modal :global(th), .standings-modal :global(td) { padding: 12px 8px; }
 	}
+
+	.notice { padding: 12px 16px; background: var(--color-surface); font-weight: 600; }
+	.registrations { max-width: 640px; margin-bottom: 32px; }
+	.registration-list { list-style: none; padding: 0; margin: 0 0 24px; }
+	.registration-list li { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 48px; border-bottom: 1px solid var(--color-secondary); }
+	.registration-list span { min-width: 0; overflow-wrap: anywhere; }
+	.link-button { min-height: 44px; padding: 0 8px; border: 0; background: transparent; color: var(--color-text); text-decoration: underline; cursor: pointer; }
+	.confirm-dialog { width: min(520px, calc(100% - 32px)); padding: 28px; border: 1px solid var(--color-text); border-radius: 0; background: var(--color-background); color: var(--color-text); }
+	.confirm-dialog::backdrop { background: rgb(0 0 0 / 45%); }
+	.confirm-dialog p { line-height: 1.6; overflow-wrap: anywhere; margin-block: 20px 28px; }
 
 	/* Seitenlokale Abstände; der Hero der Startseite bleibt unverändert. */
 	:global(main:has(> .tournament-header)) { padding-block: 40px; }
